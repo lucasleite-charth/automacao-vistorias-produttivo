@@ -1,329 +1,370 @@
-function enviarRelatorioConsolidadoVistorias() {
-  const ARQUIVO = 'RelatorioEmail.gs';
-  const FUNCAO = 'enviarRelatorioConsolidadoVistorias';
-  const NOME_ABA = 'Vistorias_Tratadas';
+//Calendar
+function criarEventosCalendar() {
+  const shVit = getSheet_('Vistorias_Tratadas');
 
-  logInfo_(ARQUIVO, FUNCAO, 'Iniciando envio de relatorio consolidado');
+  if (!shVit || shVit.getLastRow() < 2) {
+    Logger.log('Nenhuma vistoria para processar no Calendar');
+    return { criados: [], atualizados: [] };
+  }
+  log_('INFO', 'Iniciando criação de eventos no Calendar');
+  const config = getConfig_();
+  const calendarId = config.calendarId || 'primary';
+  const diasAntecedencia = parseInt(config.dias_aviso, 10) || 7;
+  log_('INFO', 'calendarId: ' + calendarId);
+  log_('INFO', 'diasAntecedencia: ' + diasAntecedencia);
 
-  try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const aba = ss.getSheetByName(NOME_ABA);
+  const calendar = CalendarApp.getCalendarById(calendarId);
+  if (!calendar) {
+    throw new Error('Calendário não encontrado: ' + calendarId);
+  }
 
-    if (!aba) {
-      logErro_(ARQUIVO, FUNCAO, 'Aba nao encontrada', { nomeAba: NOME_ABA });
-      throw new Error('A aba "' + NOME_ABA + '" nao foi encontrada.');
+  const dados = shVit.getDataRange().getValues();
+  const cabecalho = dados[0];
+
+  const idxIdAtv = getColIndex_(cabecalho, 'id_atividade');
+  const idxTitulo = getColIndex_(cabecalho, 'titulo_vistoria');
+  const idxDataSync = getColIndex_(cabecalho, 'data_sincronizacao');
+  const idxDataFim = getColIndex_(cabecalho, 'data_finalizacao');
+  const idxCriticidade = getColIndex_(cabecalho, 'criticidade');
+  const idxProxRevisao = getColIndex_(cabecalho, 'proxima_revisao');
+  const idxPontPerc = getColIndex_(cabecalho, 'percentual_conformidade');
+  const idxHash = getColIndex_(cabecalho, 'hash_evento');
+  const idxEventId = getOrCreateColumn_(shVit, cabecalho, 'event_id');
+
+  const agora = new Date();
+  const eventosCriados = [];
+  const eventosAtualizados = [];
+  const LIMITE_EVENTOS_POR_EXECUCAO = 50;
+  let processados = 0;
+
+  log_('INFO', 'Iniciando criação de eventos no Calendar');
+
+  for (let i = 1; i < dados.length; i++) {
+    if (processados >= LIMITE_EVENTOS_POR_EXECUCAO) {
+      Logger.log('Limite de eventos por execução atingido.');
+      break;
     }
+    log_('INFO', 'Processando linha ' + i);
 
-    const dados = aba.getDataRange().getValues();
-    if (!dados || dados.length < 2) {
-      logWarn_(ARQUIVO, FUNCAO, 'Aba sem dados para envio');
-      return;
+    const linha = dados[i];
+
+    const idAtv = linha[idxIdAtv];
+    const titulo = linha[idxTitulo] || 'Revisão de Vistoria';
+    const dataSync = linha[idxDataSync];
+    const dataFim = linha[idxDataFim];
+    const criticidade = linha[idxCriticidade] || 'Baixa';
+    const proxRevisao = linha[idxProxRevisao];
+    const percentual = Number(linha[idxPontPerc]) || 0;
+    const hashAtual = linha[idxHash];
+    const eventIdSalvo = idxEventId >= 0 ? linha[idxEventId] : '';
+
+    if (!idAtv || !proxRevisao){log_('WARN', 'Linha ignorada: sem id ou data'); 
+    continue;
     }
-
-    const cab = dados[0];
-
-    const idx = {
-      id_atividade: cab.indexOf('id_atividade'),
-      titulo_vistoria: cab.indexOf('titulo_vistoria'),
-      executor: cab.indexOf('executor'),
-      data_sincronizacao: cab.indexOf('data_sincronizacao'),
-      percentual_conformidade: cab.indexOf('percentual_conformidade'),
-      qtde_nao_conformes: cab.indexOf('qtde_nao_conformes'),
-      qtde_campos_criticos_irregulares: cab.indexOf('qtde_campos_criticos_irregulares'),
-      criticidade: cab.indexOf('criticidade'),
-      proxima_revisao: cab.indexOf('proxima_revisao')
-    };
-
-    const obrigatorias = [
-      'id_atividade',
-      'titulo_vistoria',
-      'executor',
-      'data_sincronizacao',
-      'percentual_conformidade',
-      'qtde_nao_conformes',
-      'qtde_campos_criticos_irregulares',
-      'criticidade',
-      'proxima_revisao'
-    ];
-
-    const faltando = obrigatorias.filter(function(nome) {
-      return idx[nome] < 0;
+    const dataRevisao = normalizarData_(proxRevisao);
+    if (!dataRevisao) continue;
+    if (dataRevisao <= agora){log_('INFO', 'Linha ignorada: data já passou');
+    continue;
+    }
+    const diasAteRevisao = Math.ceil((dataRevisao - agora) / (1000 * 60 * 60 * 24));
+    if (diasAteRevisao > diasAntecedencia) {
+    log_('INFO', 'Linha ignorada: fora do prazo');
+    continue;
+    }
+    const novoHash = gerarHashEvento_({
+      idAtividade: idAtv,
+      titulo: titulo,
+      dataFim: dataFim,
+      criticidade: criticidade,
+      dataRevisao: dataRevisao,
+      percentual: percentual
     });
 
-    if (faltando.length > 0) {
-      logErro_(ARQUIVO, FUNCAO, 'Colunas obrigatorias ausentes', {
-        faltando: faltando
+    if (eventIdSalvo) {
+      const eventoExistente = calendar.getEventById(eventIdSalvo);
+
+      if (eventoExistente) {
+        log_('INFO', 'Atualizando evento: ' + idAtv);
+        if (hashAtual === novoHash) {
+          continue;
+        }
+
+        atualizarEventoVistoria_(eventoExistente, {
+          idAtividade: idAtv,
+          titulo: titulo,
+          dataSync: dataSync,
+          dataFim: dataFim,
+          criticidade: criticidade,
+          dataRevisao: dataRevisao,
+          percentual: percentual,
+          hash: novoHash
+        });
+
+        shVit.getRange(i + 1, idxHash + 1).setValue(novoHash);
+        eventosAtualizados.push(eventoExistente.getId());
+        processados++;
+        continue;
+      }
+    }
+    log_('INFO', 'Criando evento: ' + idAtv);
+      const evento = criarEventoVistoria_({
+      idAtividade: idAtv,
+      titulo: titulo,
+      dataSync: dataSync,
+      dataFim: dataFim,
+      criticidade: criticidade,
+      dataRevisao: dataRevisao,
+      percentual: percentual,
+      hash: novoHash
+    }, calendar);
+
+    if (evento) {
+      log_('INFO', 'Evento criado: ' + evento.id);
+      shVit.getRange(i + 1, idxEventId + 1).setValue(evento.id);
+      shVit.getRange(i + 1, idxHash + 1).setValue(novoHash);
+      eventosCriados.push(evento.id);
+      processados++;
+    }
+  }
+
+  Logger.log(
+    'Calendar: ' +
+    eventosCriados.length + ' criados, ' +
+    eventosAtualizados.length + ' atualizados.'
+  );
+  log_(
+  'INFO',
+  'Finalizado: ' +
+  eventosCriados.length + ' criados, ' +
+  eventosAtualizados.length + ' atualizados'
+);
+  return {
+    criados: eventosCriados,
+    atualizados: eventosAtualizados
+  };
+}
+
+function criarEventoVistoria_(dados, calendar) {
+  const ARQUIVO = 'Calendar.gs';
+  const FUNCAO = 'criarEventoVistoria_';
+
+  const tituloEvento = montarTituloEvento_(dados);
+  const descricao = montarDescricaoEvento_(dados);
+
+  const inicio = new Date(dados.dataRevisao);
+  const fim = new Date(inicio);
+  fim.setHours(fim.getHours() + 2);
+
+  const maxTentativas = 5;
+  let tentativa = 0;
+
+  while (tentativa < maxTentativas) {
+    try {
+      const evento = calendar.createEvent(tituloEvento, inicio, fim, {
+        description: descricao,
+        location: 'Revisao de Vistoria - Produttivo'
       });
-      throw new Error('Colunas obrigatorias nao encontradas: ' + faltando.join(', '));
-    }
 
-    const destinatario = getEmailParaDefault_();
-    const cc = getEmailCcDefault_();
+      aplicarCorEvento_(evento, dados.criticidade);
+      configurarLembretes_(evento, dados.criticidade);
 
-    if (!destinatario) {
-      logErro_(ARQUIVO, FUNCAO, 'email_para nao configurado na aba Config');
-      throw new Error('Configure "email_para" na aba Config.');
-    }
+      Utilities.sleep(500);
 
-    const hoje = new Date();
-    const linhasRelatorio = [];
-    const resumo = {
-      alta: 0,
-      media: 0,
-      baixa: 0
-    };
+      logInfo_(ARQUIVO, FUNCAO, 'Evento criado com sucesso', {
+        idAtividade: dados.idAtividade,
+        eventId: evento.getId(),
+        titulo: tituloEvento
+      });
 
-    for (let i = 1; i < dados.length; i++) {
-      const linha = dados[i];
+      return {
+        id: evento.getId(),
+        titulo: tituloEvento,
+        data: inicio
+      };
+    } catch (error) {
+      const msg = String(error);
 
-      const idAtividade = obterTextoRel_(linha[idx.id_atividade]);
-      const titulo = obterTextoRel_(linha[idx.titulo_vistoria]);
-      const executor = obterTextoRel_(linha[idx.executor]);
-      const dataSync = linha[idx.data_sincronizacao];
-      const percentual = Number(linha[idx.percentual_conformidade]) || 0;
-      const naoConf = Number(linha[idx.qtde_nao_conformes]) || 0;
-      const criticos = Number(linha[idx.qtde_campos_criticos_irregulares]) || 0;
-      const criticidade = obterTextoRel_(linha[idx.criticidade]) || 'Baixa';
-      const vencimento = linha[idx.proxima_revisao];
+      if (
+        msg.includes('too many calendars or calendar events in a short time') ||
+        msg.includes('Service invoked too many times')
+      ) {
+        const esperaMs = Math.pow(2, tentativa) * 1000 + Math.floor(Math.random() * 500);
 
-      if (!idAtividade || !titulo || !vencimento) {
+        logWarn_(ARQUIVO, FUNCAO, 'Rate limit no Calendar, aguardando nova tentativa', {
+          idAtividade: dados.idAtividade,
+          tentativa: tentativa + 1,
+          maxTentativas: maxTentativas,
+          esperaMs: esperaMs
+        });
+
+        Utilities.sleep(esperaMs);
+        tentativa++;
         continue;
       }
 
-      const criticidadeNorm = normalizarTextoRel_(criticidade);
-      if (criticidadeNorm === 'alta') resumo.alta++;
-      else if (criticidadeNorm === 'media') resumo.media++;
-      else resumo.baixa++;
-
-      const diasRestantes = calcularDiasRestantesRel_(vencimento, hoje);
-
-      linhasRelatorio.push({
-        idAtividade: idAtividade,
-        titulo: titulo,
-        executor: executor,
-        dataSync: formatarDataRel_(dataSync),
-        percentualTexto: Math.round(percentual * 100) + '%',
-        percentualNumero: percentual,
-        naoConf: naoConf,
-        criticos: criticos,
-        criticidade: criticidade,
-        vencimento: formatarDataHoraRel_(vencimento),
-        diasRestantes: diasRestantes
+      logErro_(ARQUIVO, FUNCAO, 'Erro ao criar evento', {
+        idAtividade: dados.idAtividade,
+        mensagemErro: error.message || String(error),
+        stack: error.stack || ''
       });
+
+      return null;
     }
-
-    if (linhasRelatorio.length === 0) {
-      logWarn_(ARQUIVO, FUNCAO, 'Nenhuma vistoria valida encontrada para montar o relatorio');
-      return;
-    }
-
-    linhasRelatorio.sort(function(a, b) {
-      const ordem = { alta: 0, media: 1, baixa: 2 };
-      const oa = ordem[normalizarTextoRel_(a.criticidade)] ?? 9;
-      const ob = ordem[normalizarTextoRel_(b.criticidade)] ?? 9;
-      if (oa !== ob) return oa - ob;
-      return a.diasRestantes - b.diasRestantes;
-    });
-
-    const assunto = 'VISTORIAS PARA REVISÃO (' + linhasRelatorio.length + ') - ' + formatarDataHoraRel_(new Date());
-    const corpoTexto = montarTextoRelatorioVistorias_(linhasRelatorio, resumo);
-    const corpoHtml = montarHtmlRelatorioVistorias_(linhasRelatorio, resumo);
-
-    const opcoes = {
-      htmlBody: corpoHtml
-    };
-    if (cc) opcoes.cc = cc;
-
-    GmailApp.sendEmail(destinatario, assunto, corpoTexto, opcoes);
-
-    logInfo_(ARQUIVO, FUNCAO, 'Relatorio consolidado enviado com sucesso', {
-      destinatario: destinatario,
-      cc: cc,
-      totalVistorias: linhasRelatorio.length,
-      resumo: resumo
-    });
-
-  } catch (e) {
-    logErro_(ARQUIVO, FUNCAO, 'Erro ao enviar relatorio consolidado', {
-      mensagemErro: e.message,
-      stack: e.stack
-    });
-    throw e;
   }
-}
 
-function montarHtmlRelatorioVistorias_(linhas, resumo) {
-  const dataRelatorio = formatarDataHoraRel_(new Date());
-
-  const linhasTabela = linhas.map(function(item) {
-    const corPercentual = item.percentualNumero < 0.7 ? '#d32f2f' : (item.percentualNumero < 0.9 ? '#f9a825' : '#2e7d32');
-    const corDias = item.diasRestantes <= 2 ? '#2e7d32' : '#555';
-
-    return `
-      <tr style="background:#f9f9f9;">
-        <td style="padding:8px; border:1px solid #ccc;">${escapeHtmlRel_(item.idAtividade)}</td>
-        <td style="padding:8px; border:1px solid #ccc;">${escapeHtmlRel_(item.titulo)}</td>
-        <td style="padding:8px; border:1px solid #ccc;">${escapeHtmlRel_(item.executor)}</td>
-        <td style="padding:8px; border:1px solid #ccc;">${escapeHtmlRel_(item.dataSync)}</td>
-        <td style="padding:8px; border:1px solid #ccc; color:${corPercentual}; font-weight:bold;">${escapeHtmlRel_(item.percentualTexto)}</td>
-        <td style="padding:8px; border:1px solid #ccc; text-align:center;">${item.naoConf}</td>
-        <td style="padding:8px; border:1px solid #ccc; text-align:center; color:#d32f2f;">${item.criticos}</td>
-        <td style="padding:8px; border:1px solid #ccc;">
-          ${escapeHtmlRel_(item.vencimento)}<br>
-          <span style="color:${corDias}; font-weight:bold;">(${item.diasRestantes} dias)</span>
-        </td>
-      </tr>
-    `;
-  }).join('');
-
-  return `
-  <div style="font-family: Arial, sans-serif; background:#f4f6f8; padding:20px;">
-    <div style="max-width:800px; margin:auto; background:#ffffff; border-radius:10px; overflow:hidden;">
-
-      <div style="padding:20px; text-align:center;">
-        <h2 style="color:#d32f2f; margin:0;"><strong> VISTORIAS PARA REVISAO</strong></h2>
-      </div>
-
-      <div style="padding:0 24px 20px 24px; color:#333;">
-        <p><strong>Data do relatório:</strong> ${escapeHtmlRel_(dataRelatorio)}</p>
-        <p><strong>Total de vistorias:</strong> ${linhas.length}</p>
-      </div>
-
-      <div style="padding:0 24px;">
-        <h3 style="color:#444;"><b> RESUMO POR CRITICIDADE:</b></h3>
-
-        <table width="100%" style="border-collapse:collapse; margin-top:10px;">
-          <tr style="background:#e0e0e0;">
-            <th style="padding:10px; text-align:left; border:1px solid #ccc;">Criticidade</th>
-            <th style="padding:10px; border:1px solid #ccc;">Quantidade</th>
-          </tr>
-          <tr>
-            <td style="padding:10px; color:#d32f2f; border:1px solid #ccc;"><strong>Alta</strong></td>
-            <td style="text-align:center; border:1px solid #ccc;">${resumo.alta}</td>
-          </tr>
-          <tr>
-            <td style="padding:10px; color:#f9a825; border:1px solid #ccc;"><strong>Média</strong></td>
-            <td style="text-align:center; border:1px solid #ccc;">${resumo.media}</td>
-          </tr>
-          <tr>
-            <td style="padding:10px; color:#2e7d32; border:1px solid #ccc;"><strong>Baixa</strong></td>
-            <td style="text-align:center; border:1px solid #ccc;">${resumo.baixa}</td>
-          </tr>
-        </table>
-      </div>
-
-      <div style="padding:20px 24px;">
-        <h3 style="color:#444;">⚠️ DETALHAMENTO DAS VISTORIAS:</h3>
-
-        <table width="100%" style="border-collapse:collapse; margin-top:10px; font-size:13px;">
-          <tr style="background:#333; color:#fff;">
-            <th style="padding:8px; border:1px solid #555;">ID</th>
-            <th style="padding:8px; border:1px solid #555;">Vistoria</th>
-            <th style="padding:8px; border:1px solid #555;">Executor</th>
-            <th style="padding:8px; border:1px solid #555;">Data Sync</th>
-            <th style="padding:8px; border:1px solid #555;">% Conf.</th>
-            <th style="padding:8px; border:1px solid #555;">Não Conf.</th>
-            <th style="padding:8px; border:1px solid #555;">Críticos</th>
-            <th style="padding:8px; border:1px solid #555;">Vencimento</th>
-          </tr>
-          ${linhasTabela}
-        </table>
-      </div>
-
-      <div style="background:#fff3cd; border-left:5px solid #f9a825; margin:20px; padding:15px;">
-        <h4 style="margin-top:0;">⚠️ AÇÃO REQUERIDA:</h4>
-        <ul style="margin:0; padding-left:20px;">
-          <li><strong>Contatar executor para revisão dos itens não conformes</strong></li>
-          <li><strong>Agendar nova vistoria para as pendências críticas</strong></li>
-          <li><strong>Documentar ações corretivas implementadas</strong></li>
-          <li><strong>✅ Atualizar status no Produttivo após correções</strong></li>
-        </ul>
-      </div>
-
-      <div style="text-align:center; font-size:12px; color:#777; padding:15px;">
-        Relatório automático do sistema Vistorias Produttivo | ${escapeHtmlRel_(dataRelatorio)}
-      </div>
-    </div>
-  </div>
-  `;
-}
-
-function montarTextoRelatorioVistorias_(linhas, resumo) {
-  const cabecalho = [
-    'VISTORIAS PARA REVISAO',
-    '',
-    'Data do relatorio: ' + formatarDataHoraRel_(new Date()),
-    'Total de vistorias: ' + linhas.length,
-    '',
-    'RESUMO POR CRITICIDADE',
-    'Alta: ' + resumo.alta,
-    'Media: ' + resumo.media,
-    'Baixa: ' + resumo.baixa,
-    '',
-    'DETALHAMENTO'
-  ];
-
-  const detalhes = linhas.map(function(item) {
-    return [
-      'ID: ' + item.idAtividade,
-      'Vistoria: ' + item.titulo,
-      'Executor: ' + item.executor,
-      'Data Sync: ' + item.dataSync,
-      'Conformidade: ' + item.percentualTexto,
-      'Nao conformes: ' + item.naoConf,
-      'Criticos: ' + item.criticos,
-      'Vencimento: ' + item.vencimento + ' (' + item.diasRestantes + ' dias)',
-      '---'
-    ].join('\n');
+  logErro_(ARQUIVO, FUNCAO, 'Falha apos varias tentativas para criar evento', {
+    idAtividade: dados.idAtividade,
+    maxTentativas: maxTentativas
   });
 
-  return cabecalho.concat(detalhes).join('\n');
+  return null;
 }
 
-function formatarDataRel_(valor) {
-  if (!valor) return '';
-  if (Object.prototype.toString.call(valor) === '[object Date]' && !isNaN(valor)) {
-    return Utilities.formatDate(valor, Session.getScriptTimeZone(), 'dd/MM/yyyy');
+function limparEventosAntigos() {
+  const shVit = getSheet_('Vistorias_Tratadas');
+  if (!shVit || shVit.getLastRow() < 2) {
+    Logger.log('Nenhuma linha para limpar.');
+    return 0;
   }
-  return String(valor).trim();
-}
 
-function formatarDataHoraRel_(valor) {
-  if (!valor) return '';
-  if (Object.prototype.toString.call(valor) === '[object Date]' && !isNaN(valor)) {
-    return Utilities.formatDate(valor, Session.getScriptTimeZone(), 'dd/MM/yyyy HH:mm');
+  const config = getConfig_();
+  const calendarId = config.calendarId || 'primary';
+
+  const calendar = CalendarApp.getCalendarById(calendarId);
+  if (!calendar) {
+    throw new Error('Calendário não encontrado: ' + calendarId);
   }
-  return String(valor).trim();
+
+  const dados = shVit.getDataRange().getValues();
+  const cabecalho = dados[0];
+
+  const idxEventId = cabecalho.indexOf('event_id');
+  const idxProxRevisao = cabecalho.indexOf('proxima_revisao');
+
+  if (idxEventId === -1 || idxProxRevisao === -1) {
+    Logger.log('Colunas event_id ou proxima_revisao não encontradas.');
+    return 0;
+  }
+
+  const agora = new Date();
+  let removidos = 0;
+
+  for (let i = 1; i < dados.length; i++) {
+    const linha = dados[i];
+    const eventId = linha[idxEventId];
+    const proxRevisao = normalizarData_(linha[idxProxRevisao]);
+
+    if (!eventId || !proxRevisao) continue;
+    if (proxRevisao >= agora) continue;
+
+    const evento = calendar.getEventById(eventId);
+    if (evento) {
+      evento.deleteEvent();
+      removidos++;
+    }
+
+    shVit.getRange(i + 1, idxEventId + 1).clearContent();
+  }
+
+  Logger.log('Removidos ' + removidos + ' eventos antigos do Calendar');
+  return removidos;
 }
 
-function obterTextoRel_(valor) {
-  if (valor === null || valor === undefined) return '';
-  return String(valor).trim();
+function sincronizarCalendarCompleto() {
+  Logger.log('Iniciando sincronização completa Calendar...');
+  const removidos = limparEventosAntigos();
+  const resultado = criarEventosCalendar();
+
+  Logger.log(
+    'Sincronização concluída. Removidos: ' + removidos +
+    ', Criados: ' + resultado.criados.length +
+    ', Atualizados: ' + resultado.atualizados.length
+  );
+
+  return {
+    removidos: removidos,
+    criados: resultado.criados,
+    atualizados: resultado.atualizados
+  };
 }
 
-function normalizarTextoRel_(valor) {
-  return String(valor || '')
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
+function aplicarCorEvento_(evento, criticidade) {
+  const crit = normalizarTexto_(criticidade);
+
+  if (crit === 'alta') {
+    evento.setColor(CalendarApp.EventColor.RED);
+    return;
+  }
+
+  if (crit === 'media' || crit === 'média') {
+    evento.setColor(CalendarApp.EventColor.YELLOW);
+    return;
+  }
+
+  evento.setColor(CalendarApp.EventColor.GREEN);
 }
 
-function calcularDiasRestantesRel_(dataFutura, dataBase) {
-  const futura = new Date(dataFutura);
-  futura.setHours(0, 0, 0, 0);
+function configurarLembretes_(evento, criticidade) {
+  const crit = normalizarTexto_(criticidade);
+  if (crit === 'baixa') return;
 
-  const base = new Date(dataBase);
-  base.setHours(0, 0, 0, 0);
-
-  return Math.ceil((futura - base) / (1000 * 60 * 60 * 24));
+  evento.addPopupReminder(1440);
 }
 
-function escapeHtmlRel_(texto) {
-  return String(texto || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+function montarTituloEvento_(dados) {
+  return '🔄 ' + dados.criticidade + ': ' + dados.titulo + ' (' + dados.idAtividade + ')';
 }
+
+function montarDescricaoEvento_(dados) {
+  return [
+    '📋 Vistoria: ' + dados.titulo,
+    '🆔 ID: ' + dados.idAtividade,
+    '📅 Data Sincronização: ' + formatarData_(dados.dataSync),
+    '📅 Data Finalização: ' + formatarData_(dados.dataFim),
+    '📊 Conformidade: ' + Math.round((Number(dados.percentual) || 0) * 100) + '%',
+    '🎯 Data Revisão: ' + formatarData_(dados.dataRevisao),
+    '🔗 Hash: ' + dados.hash,
+    '',
+    '⚠️ ITENS CRÍTICOS PENDENTES - REVISAR!'
+  ].join('\n');
+}
+function log_(nivel, mensagem) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let aba = ss.getSheetByName('Logs');
+
+  if (!aba) {
+    aba = ss.insertSheet('Logs');
+    aba.appendRow(['Data/Hora', 'Nível', 'Mensagem']);
+  }
+
+  const dataFormatada = Utilities.formatDate(
+    new Date(),
+    Session.getScriptTimeZone(),
+    'dd/MM/yyyy, HH:mm:ss'
+  );
+
+  aba.appendRow([dataFormatada, nivel, mensagem]);
+
+  
+}
+
+function setupTriggerCalendar() {
+  const triggers = ScriptApp.getProjectTriggers();
+  const jaExiste = triggers.some(function(trigger) {
+    return trigger.getHandlerFunction() === 'sincronizarCalendarCompleto';
+  });
+
+  if (jaExiste) {
+    Logger.log('Trigger já existe para sincronizarCalendarCompleto');
+    return;
+  }
+
+  ScriptApp.newTrigger('sincronizarCalendarCompleto')
+    .timeBased()
+    .everyDays(1)
+    .atHour(9)
+    .create();
+
+  Logger.log('Trigger criado com sucesso.');
+}
+
