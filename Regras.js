@@ -1,368 +1,262 @@
-function criarEventosCalendar() {
-  const shVit = getSheet_('Vistorias_Tratadas');
+//Regras
+var REGRAS_FORMULARIO = {
+  camposCriticos: [
+    'HÁ MENORES TRABALHANDO? SE SIM, QUANTOS E QUAIS FUNÇÕES.',
+    'CONDIÇÕES SATISFATÓRIAS DE ORDEM, ARRUMAÇÃO E LIMPEZA',
+    'EQUIPAMENTO DE ÁGUA POTÁVEL',
+    'INSTALAÇÕES ELÉTRICAS',
+    'CONDIÇÃO DO REFEITÓRIO',
+    'CONDIÇÃO DOS BANHEIROS (FUNCIONAMENTO E HIGIENE)'
+  ],
+  termosNaoConforme: [
+    'não conforme',
+    'nao conforme',
+    'irregular',
+    'inadequado',
+    'inadequada',
+    'faltando',
+    'falta',
+    'sem',
+    'ausente',
+    'improvisada',
+    'improvisado'
+  ],
+  termosNeutros: [
+    'conforme',
+    'n/a',
+    'na',
+    'não se aplica',
+    'nao se aplica',
+    'ok'
+  ]
+};
 
-  if (!shVit || shVit.getLastRow() < 2) {
-    Logger.log('Nenhuma vistoria para processar no Calendar');
-    return { criados: [], atualizados: [] };
+function obterMapaCabecalho_(headerRow) {
+  var mapa = {};
+  for (var i = 0; i < headerRow.length; i++) {
+    mapa[String(headerRow[i] || '').trim()] = i;
   }
-  log_('INFO', 'Iniciando criação de eventos no Calendar');
-  const config = getConfig_();
-  const calendarId = config.calendarId || 'primary';
-  const diasAntecedencia = parseInt(config.dias_aviso, 10) || 7;
-  log_('INFO', 'calendarId: ' + calendarId);
-  log_('INFO', 'diasAntecedencia: ' + diasAntecedencia);
+  return mapa;
+}
 
-  const calendar = CalendarApp.getCalendarById(calendarId);
-  if (!calendar) {
-    throw new Error('Calendário não encontrado: ' + calendarId);
+function normalizarTexto_(valor) {
+  if (valor === null || typeof valor === 'undefined') return '';
+  return String(valor)
+    .toLowerCase()
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function textoIndicaNaoConformidade_(valor) {
+  var txt = normalizarTexto_(valor);
+  if (!txt) return false;
+
+  for (var i = 0; i < REGRAS_FORMULARIO.termosNeutros.length; i++) {
+    if (txt === normalizarTexto_(REGRAS_FORMULARIO.termosNeutros[i])) return false;
   }
 
-  const dados = shVit.getDataRange().getValues();
-  const cabecalho = dados[0];
+  for (var j = 0; j < REGRAS_FORMULARIO.termosNaoConforme.length; j++) {
+    if (txt.indexOf(normalizarTexto_(REGRAS_FORMULARIO.termosNaoConforme[j])) !== -1) return true;
+  }
 
-  const idxIdAtv = getColIndex_(cabecalho, 'id_atividade');
-  const idxTitulo = getColIndex_(cabecalho, 'titulo_vistoria');
-  const idxDataSync = getColIndex_(cabecalho, 'data_sincronizacao');
-  const idxDataFim = getColIndex_(cabecalho, 'data_finalizacao');
-  const idxCriticidade = getColIndex_(cabecalho, 'criticidade');
-  const idxProxRevisao = getColIndex_(cabecalho, 'proxima_revisao');
-  const idxPontPerc = getColIndex_(cabecalho, 'percentual_conformidade');
-  const idxHash = getColIndex_(cabecalho, 'hash_evento');
-  const idxEventId = getOrCreateColumn_(shVit, cabecalho, 'event_id');
+  return false;
+}
 
-  const agora = new Date();
-  const eventosCriados = [];
-  const eventosAtualizados = [];
-  const LIMITE_EVENTOS_POR_EXECUCAO = 50;
-  let processados = 0;
+function textoIndicaMenorIrregular_(valor, notas) {
+  var resposta = normalizarTexto_(valor);
+  var obs = normalizarTexto_(notas);
 
-  log_('INFO', 'Iniciando criação de eventos no Calendar');
+  if (!resposta && !obs) return false;
+  if (resposta === 'nao' || resposta === 'não') return false;
+  if (resposta === 'sim') return true;
 
-  for (let i = 1; i < dados.length; i++) {
-    if (processados >= LIMITE_EVENTOS_POR_EXECUCAO) {
-      Logger.log('Limite de eventos por execução atingido.');
-      break;
+  if (obs.indexOf('menor') !== -1) return true;
+  if (obs.indexOf('crianca') !== -1 || obs.indexOf('criança') !== -1) return true;
+
+  return false;
+}
+
+function calcularPercentualConformidade_(pontuacao, pontuacaoMaxima) {
+  var pont = parseNumber_(pontuacao);
+  var max = parseNumber_(pontuacaoMaxima);
+  if (!max || max <= 0) return 0;
+  return pont / max;
+}
+
+function avaliarCamposCriticosFormulario_(headerFormulario, linhaFormulario) {
+  var mapa = obterMapaCabecalho_(headerFormulario);
+  var totalNaoConformes = 0;
+  var totalCriticosIrregulares = 0;
+  var detalhes = [];
+
+  for (var i = 0; i < REGRAS_FORMULARIO.camposCriticos.length; i++) {
+    var campo = REGRAS_FORMULARIO.camposCriticos[i];
+    var idxCampo = mapa[campo];
+    var idxNotas = mapa[campo + ' - Notas'];
+
+    if (typeof idxCampo === 'undefined') continue;
+
+    var valor = linhaFormulario[idxCampo];
+    var notas = typeof idxNotas !== 'undefined' ? linhaFormulario[idxNotas] : '';
+    var irregular = false;
+
+    if (campo === 'HÁ MENORES TRABALHANDO? SE SIM, QUANTOS E QUAIS FUNÇÕES.') {
+      irregular = textoIndicaMenorIrregular_(valor, notas);
+    } else {
+      irregular = textoIndicaNaoConformidade_(valor) || textoIndicaNaoConformidade_(notas);
     }
-    log_('INFO', 'Processando linha ' + i);
 
-    const linha = dados[i];
-
-    const idAtv = linha[idxIdAtv];
-    const titulo = linha[idxTitulo] || 'Revisão de Vistoria';
-    const dataSync = linha[idxDataSync];
-    const dataFim = linha[idxDataFim];
-    const criticidade = linha[idxCriticidade] || 'Baixa';
-    const proxRevisao = linha[idxProxRevisao];
-    const percentual = Number(linha[idxPontPerc]) || 0;
-    const hashAtual = linha[idxHash];
-    const eventIdSalvo = idxEventId >= 0 ? linha[idxEventId] : '';
-
-    if (!idAtv || !proxRevisao){log_('WARN', 'Linha ignorada: sem id ou data'); 
-    continue;
-    }
-    const dataRevisao = normalizarData_(proxRevisao);
-    if (!dataRevisao) continue;
-    if (dataRevisao <= agora){log_('INFO', 'Linha ignorada: data já passou');
-    continue;
-    }
-    const diasAteRevisao = Math.ceil((dataRevisao - agora) / (1000 * 60 * 60 * 24));
-    if (diasAteRevisao > diasAntecedencia) {
-    log_('INFO', 'Linha ignorada: fora do prazo');
-    continue;
-    }
-    const novoHash = gerarHashEvento_({
-      idAtividade: idAtv,
-      titulo: titulo,
-      dataFim: dataFim,
-      criticidade: criticidade,
-      dataRevisao: dataRevisao,
-      percentual: percentual
-    });
-
-    if (eventIdSalvo) {
-      const eventoExistente = calendar.getEventById(eventIdSalvo);
-
-      if (eventoExistente) {
-        log_('INFO', 'Atualizando evento: ' + idAtv);
-        if (hashAtual === novoHash) {
-          continue;
-        }
-
-        atualizarEventoVistoria_(eventoExistente, {
-          idAtividade: idAtv,
-          titulo: titulo,
-          dataSync: dataSync,
-          dataFim: dataFim,
-          criticidade: criticidade,
-          dataRevisao: dataRevisao,
-          percentual: percentual,
-          hash: novoHash
-        });
-
-        shVit.getRange(i + 1, idxHash + 1).setValue(novoHash);
-        eventosAtualizados.push(eventoExistente.getId());
-        processados++;
-        continue;
-      }
-    }
-    log_('INFO', 'Criando evento: ' + idAtv);
-      const evento = criarEventoVistoria_({
-      idAtividade: idAtv,
-      titulo: titulo,
-      dataSync: dataSync,
-      dataFim: dataFim,
-      criticidade: criticidade,
-      dataRevisao: dataRevisao,
-      percentual: percentual,
-      hash: novoHash
-    }, calendar);
-
-    if (evento) {
-      log_('INFO', 'Evento criado: ' + evento.id);
-      shVit.getRange(i + 1, idxEventId + 1).setValue(evento.id);
-      shVit.getRange(i + 1, idxHash + 1).setValue(novoHash);
-      eventosCriados.push(evento.id);
-      processados++;
+    if (irregular) {
+      totalNaoConformes++;
+      totalCriticosIrregulares++;
+      detalhes.push({
+        campo: campo,
+        valor: valor || '',
+        notas: notas || ''
+      });
     }
   }
 
-  Logger.log(
-    'Calendar: ' +
-    eventosCriados.length + ' criados, ' +
-    eventosAtualizados.length + ' atualizados.'
-  );
-  log_(
-  'INFO',
-  'Finalizado: ' +
-  eventosCriados.length + ' criados, ' +
-  eventosAtualizados.length + ' atualizados'
-);
   return {
-    criados: eventosCriados,
-    atualizados: eventosAtualizados
+    qtdeNaoConformes: totalNaoConformes,
+    qtdeCamposCriticosIrregulares: totalCriticosIrregulares,
+    detalhes: detalhes
   };
 }
 
-function criarEventoVistoria_(dados, calendar) {
-  const ARQUIVO = 'Calendar.gs';
-  const FUNCAO = 'criarEventoVistoria_';
+function definirCriticidade_(percentualConformidade, qtdeCriticosIrregulares, qtdeNaoConformes) {
+  var perc = Number(percentualConformidade || 0);
+  var criticos = Number(qtdeCriticosIrregulares || 0);
+  var naoConformes = Number(qtdeNaoConformes || 0);
 
-  const tituloEvento = montarTituloEvento_(dados);
-  const descricao = montarDescricaoEvento_(dados);
+  if (criticos > 0) return 'Alta';
+  if (perc < 0.7) return 'Alta';
+  if (naoConformes >= 3) return 'Alta';
 
-  const inicio = new Date(dados.dataRevisao);
-  const fim = new Date(inicio);
-  fim.setHours(fim.getHours() + 2);
+  if (perc < 0.9) return 'Média';
+  if (naoConformes >= 1) return 'Média';
 
-  const maxTentativas = 5;
-  let tentativa = 0;
+  return 'Baixa';
+}
 
-  while (tentativa < maxTentativas) {
-    try {
-      const evento = calendar.createEvent(tituloEvento, inicio, fim, {
-        description: descricao,
-        location: 'Revisao de Vistoria - Produttivo'
-      });
+function calcularProximaRevisao_(dataBase, criticidade) {
+  var data = parseDate_(dataBase);
+  if (!data) data = new Date();
 
-      aplicarCorEvento_(evento, dados.criticidade);
-      configurarLembretes_(evento, dados.criticidade);
+  var dias = getPrazoRevisaoPorCriticidade_(criticidade);
+  var proxima = new Date(data);
+  proxima.setDate(proxima.getDate() + dias);
+  return proxima;
+}
 
-      Utilities.sleep(500);
+function definirAcaoRecomendada_(criticidade, qtdeCriticosIrregulares, qtdeNaoConformes) {
+  if (criticidade === 'Alta' && qtdeCriticosIrregulares > 0) {
+    return 'Agendar revisão prioritária e cobrar regularização imediata';
+  }
+  if (criticidade === 'Alta') {
+    return 'Agendar revisão em curto prazo e acompanhar plano de ação';
+  }
+  if (criticidade === 'Média') {
+    return 'Enviar lembrete e acompanhar correções pendentes';
+  }
+  if (qtdeNaoConformes > 0) {
+    return 'Monitorar pendências e validar no próximo ciclo';
+  }
+  return 'Sem ação imediata';
+}
 
-      logInfo_(ARQUIVO, FUNCAO, 'Evento criado com sucesso', {
-        idAtividade: dados.idAtividade,
-        eventId: evento.getId(),
-        titulo: tituloEvento
-      });
+function montarDetalhesPendencia_(avaliacao) {
+  if (!avaliacao || !avaliacao.detalhes || !avaliacao.detalhes.length) return '';
+  return avaliacao.detalhes.map(function (item) {
+    var partes = [item.campo];
+    if (item.valor) partes.push('Valor: ' + item.valor);
+    if (item.notas) partes.push('Notas: ' + item.notas);
+    return partes.join(' | ');
+  }).join('\n');
+}
 
-      return {
-        id: evento.getId(),
-        titulo: tituloEvento,
-        data: inicio
-      };
-    } catch (error) {
-      const msg = String(error);
+function montarObjetoFormulario_(headerFormulario, linhaFormulario) {
+  var mapa = obterMapaCabecalho_(headerFormulario);
 
-      if (
-        msg.includes('too many calendars or calendar events in a short time') ||
-        msg.includes('Service invoked too many times')
-      ) {
-        const esperaMs = Math.pow(2, tentativa) * 1000 + Math.floor(Math.random() * 500);
+  var pontuacao = linhaFormulario[mapa['Pontuação']];
+  var pontuacaoMaxima = linhaFormulario[mapa['Pontuação máxima']];
+  var atividade = linhaFormulario[mapa['Atividade']];
+  var localCliente = linhaFormulario[mapa['Local/Cliente']];
+  var ativo = linhaFormulario[mapa['Ativo']];
+  var dataHora = linhaFormulario[mapa['DATA E HORA']];
 
-        logWarn_(ARQUIVO, FUNCAO, 'Rate limit no Calendar, aguardando nova tentativa', {
-          idAtividade: dados.idAtividade,
-          tentativa: tentativa + 1,
-          maxTentativas: maxTentativas,
-          esperaMs: esperaMs
-        });
+  var avaliacao = avaliarCamposCriticosFormulario_(headerFormulario, linhaFormulario);
+  var percentual = calcularPercentualConformidade_(pontuacao, pontuacaoMaxima);
+  var criticidade = definirCriticidade_(
+    percentual,
+    avaliacao.qtdeCamposCriticosIrregulares,
+    avaliacao.qtdeNaoConformes
+  );
 
-        Utilities.sleep(esperaMs);
-        tentativa++;
-        continue;
-      }
+  return {
+    atividade: atividade || '',
+    localCliente: localCliente || '',
+    ativo: ativo || '',
+    dataHora: dataHora || '',
+    pontuacao: parseNumber_(pontuacao),
+    pontuacaoMaxima: parseNumber_(pontuacaoMaxima),
+    percentualConformidade: percentual,
+    qtdeNaoConformes: avaliacao.qtdeNaoConformes,
+    qtdeCamposCriticosIrregulares: avaliacao.qtdeCamposCriticosIrregulares,
+    criticidade: criticidade,
+    detalhesPendencia: montarDetalhesPendencia_(avaliacao)
+  };
+}
 
-      logErro_(ARQUIVO, FUNCAO, 'Erro ao criar evento', {
-        idAtividade: dados.idAtividade,
-        mensagemErro: error.message || String(error),
-        stack: error.stack || ''
-      });
+function montarIndiceFormulariosPorAtividade_(headerFormulario, linhasFormulario) {
+  var indice = {};
 
-      return null;
-    }
+  for (var i = 0; i < linhasFormulario.length; i++) {
+    var obj = montarObjetoFormulario_(headerFormulario, linhasFormulario[i]);
+    var chavePrincipal = String(obj.atividade || '').trim();
+    var chaveSecundaria = String(obj.localCliente || '').trim();
+
+    if (chavePrincipal) indice[chavePrincipal] = obj;
+    if (chaveSecundaria && !indice[chaveSecundaria]) indice[chaveSecundaria] = obj;
   }
 
-  logErro_(ARQUIVO, FUNCAO, 'Falha apos varias tentativas para criar evento', {
-    idAtividade: dados.idAtividade,
-    maxTentativas: maxTentativas
-  });
+  return indice;
+}
+
+function obterFormularioRelacionado_(tituloAtividade, localAtividade, indiceFormularios) {
+  var titulo = String(tituloAtividade || '').trim();
+  var local = String(localAtividade || '').trim();
+
+  if (titulo && indiceFormularios[titulo]) return indiceFormularios[titulo];
+  if (local && indiceFormularios[local]) return indiceFormularios[local];
+
+  var tituloNorm = normalizarTexto_(titulo);
+  var localNorm = normalizarTexto_(local);
+  var chaves = Object.keys(indiceFormularios);
+
+  for (var i = 0; i < chaves.length; i++) {
+    var chave = chaves[i];
+    var chaveNorm = normalizarTexto_(chave);
+
+    if (tituloNorm && chaveNorm.indexOf(tituloNorm) !== -1) return indiceFormularios[chave];
+    if (tituloNorm && tituloNorm.indexOf(chaveNorm) !== -1) return indiceFormularios[chave];
+    if (localNorm && chaveNorm.indexOf(localNorm) !== -1) return indiceFormularios[chave];
+    if (localNorm && localNorm.indexOf(chaveNorm) !== -1) return indiceFormularios[chave];
+  }
 
   return null;
 }
 
-function limparEventosAntigos() {
-  const shVit = getSheet_('Vistorias_Tratadas');
-  if (!shVit || shVit.getLastRow() < 2) {
-    Logger.log('Nenhuma linha para limpar.');
-    return 0;
-  }
-
-  const config = getConfig_();
-  const calendarId = config.calendarId || 'primary';
-
-  const calendar = CalendarApp.getCalendarById(calendarId);
-  if (!calendar) {
-    throw new Error('Calendário não encontrado: ' + calendarId);
-  }
-
-  const dados = shVit.getDataRange().getValues();
-  const cabecalho = dados[0];
-
-  const idxEventId = cabecalho.indexOf('event_id');
-  const idxProxRevisao = cabecalho.indexOf('proxima_revisao');
-
-  if (idxEventId === -1 || idxProxRevisao === -1) {
-    Logger.log('Colunas event_id ou proxima_revisao não encontradas.');
-    return 0;
-  }
-
-  const agora = new Date();
-  let removidos = 0;
-
-  for (let i = 1; i < dados.length; i++) {
-    const linha = dados[i];
-    const eventId = linha[idxEventId];
-    const proxRevisao = normalizarData_(linha[idxProxRevisao]);
-
-    if (!eventId || !proxRevisao) continue;
-    if (proxRevisao >= agora) continue;
-
-    const evento = calendar.getEventById(eventId);
-    if (evento) {
-      evento.deleteEvent();
-      removidos++;
-    }
-
-    shVit.getRange(i + 1, idxEventId + 1).clearContent();
-  }
-
-  Logger.log('Removidos ' + removidos + ' eventos antigos do Calendar');
-  return removidos;
+function statusEhConcluido_(status) {
+  var s = normalizarTexto_(status);
+  return s === 'concluida' || s === 'concluída' || s === 'finalizada' || s === 'finalizado';
 }
 
-function sincronizarCalendarCompleto() {
-  Logger.log('Iniciando sincronização completa Calendar...');
-  const removidos = limparEventosAntigos();
-  const resultado = criarEventosCalendar();
-
-  Logger.log(
-    'Sincronização concluída. Removidos: ' + removidos +
-    ', Criados: ' + resultado.criados.length +
-    ', Atualizados: ' + resultado.atualizados.length
-  );
-
-  return {
-    removidos: removidos,
-    criados: resultado.criados,
-    atualizados: resultado.atualizados
-  };
-}
-
-function aplicarCorEvento_(evento, criticidade) {
-  const crit = normalizarTexto_(criticidade);
-
-  if (crit === 'alta') {
-    evento.setColor(CalendarApp.EventColor.RED);
-    return;
-  }
-
-  if (crit === 'media' || crit === 'média') {
-    evento.setColor(CalendarApp.EventColor.YELLOW);
-    return;
-  }
-
-  evento.setColor(CalendarApp.EventColor.GREEN);
-}
-
-function configurarLembretes_(evento, criticidade) {
-  const crit = normalizarTexto_(criticidade);
-  if (crit === 'baixa') return;
-
-  evento.addPopupReminder(1440);
-}
-
-function montarTituloEvento_(dados) {
-  return '🔄 ' + dados.criticidade + ': ' + dados.titulo + ' (' + dados.idAtividade + ')';
-}
-
-function montarDescricaoEvento_(dados) {
-  return [
-    '📋 Vistoria: ' + dados.titulo,
-    '🆔 ID: ' + dados.idAtividade,
-    '📅 Data Sincronização: ' + formatarData_(dados.dataSync),
-    '📅 Data Finalização: ' + formatarData_(dados.dataFim),
-    '📊 Conformidade: ' + Math.round((Number(dados.percentual) || 0) * 100) + '%',
-    '🎯 Data Revisão: ' + formatarData_(dados.dataRevisao),
-    '🔗 Hash: ' + dados.hash,
-    '',
-    '⚠️ ITENS CRÍTICOS PENDENTES - REVISAR!'
-  ].join('\n');
-}
-function log_(nivel, mensagem) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let aba = ss.getSheetByName('Logs');
-
-  if (!aba) {
-    aba = ss.insertSheet('Logs');
-    aba.appendRow(['Data/Hora', 'Nível', 'Mensagem']);
-  }
-
-  const dataFormatada = Utilities.formatDate(
-    new Date(),
-    Session.getScriptTimeZone(),
-    'dd/MM/yyyy, HH:mm:ss'
-  );
-
-  aba.appendRow([dataFormatada, nivel, mensagem]);
-
-  
-}
-
-function setupTriggerCalendar() {
-  const triggers = ScriptApp.getProjectTriggers();
-  const jaExiste = triggers.some(function(trigger) {
-    return trigger.getHandlerFunction() === 'sincronizarCalendarCompleto';
-  });
-
-  if (jaExiste) {
-    Logger.log('Trigger já existe para sincronizarCalendarCompleto');
-    return;
-  }
-
-  ScriptApp.newTrigger('sincronizarCalendarCompleto')
-    .timeBased()
-    .everyDays(1)
-    .atHour(9)
-    .create();
-
-  Logger.log('Trigger criado com sucesso.');
+function deveGerarPendencia_(status, percentualConformidade, qtdeNaoConformes, qtdeCriticosIrregulares) {
+  if (!statusEhConcluido_(status)) return false;
+  if (qtdeCriticosIrregulares > 0) return true;
+  if (qtdeNaoConformes > 0) return true;
+  if (Number(percentualConformidade || 0) < 1) return true;
+  return false;
 }
