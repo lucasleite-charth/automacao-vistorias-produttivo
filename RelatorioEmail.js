@@ -1,3 +1,4 @@
+//RelatorioEmail
 function enviarRelatorioConsolidadoVistorias() {
   const ARQUIVO = 'RelatorioEmail.gs';
   const FUNCAO = 'enviarRelatorioConsolidadoVistorias';
@@ -73,16 +74,6 @@ function enviarRelatorioConsolidadoVistorias() {
       baixa: 0
     };
 
-    const diasFiltro = getConfigNumero_('dias_relatorio', 7);
-    const somenteAlta = normalizarTextoRel_(getConfigTexto_('filtrar_somente_alta', 'nao')) === 'sim';
-    const filtrarPendencias = normalizarTextoRel_(getConfigTexto_('filtrar_pendencias', 'sim')) === 'sim';
-
-    logInfo_(ARQUIVO, FUNCAO, 'Filtros carregados da aba Config', {
-      diasFiltro: diasFiltro,
-      somenteAlta: somenteAlta,
-      filtrarPendencias: filtrarPendencias
-    });
-
     for (let i = 1; i < dados.length; i++) {
       const linha = dados[i];
 
@@ -101,30 +92,11 @@ function enviarRelatorioConsolidadoVistorias() {
       }
 
       const criticidadeNorm = normalizarTextoRel_(criticidade);
-      const diasRestantes = calcularDiasRestantesRel_(vencimento, hoje);
-
-      const ehAlta = criticidadeNorm === 'alta';
-      const dentroPrazo = diasRestantes >= 0 && diasRestantes <= diasFiltro;
-      const temPendenciaReal = naoConf > 0 || criticos > 0;
-
-      let incluir = false;
-
-      if (somenteAlta) {
-        incluir = ehAlta;
-      } else {
-        incluir = ehAlta || dentroPrazo;
-        if (filtrarPendencias) {
-          incluir = incluir || temPendenciaReal;
-        }
-      }
-
-      if (!incluir) {
-        continue;
-      }
-
       if (criticidadeNorm === 'alta') resumo.alta++;
       else if (criticidadeNorm === 'media') resumo.media++;
       else resumo.baixa++;
+
+      const diasRestantes = calcularDiasRestantesRel_(vencimento, hoje);
 
       linhasRelatorio.push({
         idAtividade: idAtividade,
@@ -161,10 +133,7 @@ function enviarRelatorioConsolidadoVistorias() {
     const opcoes = {
       htmlBody: corpoHtml
     };
-
-    if (cc) {
-      opcoes.cc = cc;
-    }
+    if (cc) opcoes.cc = cc;
 
     GmailApp.sendEmail(destinatario, assunto, corpoTexto, opcoes);
 
@@ -213,7 +182,7 @@ function montarHtmlRelatorioVistorias_(linhas, resumo) {
     <div style="max-width:800px; margin:auto; background:#ffffff; border-radius:10px; overflow:hidden;">
 
       <div style="padding:20px; text-align:center;">
-        <h2 style="color:#d32f2f; margin:0;"><strong>VISTORIAS PARA REVISÃO<strong></h2>
+        <h2 style="color:#d32f2f; margin:0;"><strong> VISTORIAS PARA REVISAO</strong></h2>
       </div>
 
       <div style="padding:0 24px 20px 24px; color:#333;">
@@ -222,7 +191,7 @@ function montarHtmlRelatorioVistorias_(linhas, resumo) {
       </div>
 
       <div style="padding:0 24px;">
-        <h3 style="color:#444;"><strong>RESUMO POR CRITICIDADE:<strong></h3>
+        <h3 style="color:#444;"><b> RESUMO POR CRITICIDADE:</b></h3>
 
         <table width="100%" style="border-collapse:collapse; margin-top:10px;">
           <tr style="background:#e0e0e0;">
@@ -265,10 +234,10 @@ function montarHtmlRelatorioVistorias_(linhas, resumo) {
       <div style="background:#fff3cd; border-left:5px solid #f9a825; margin:20px; padding:15px;">
         <h4 style="margin-top:0;">⚠️ AÇÃO REQUERIDA:</h4>
         <ul style="margin:0; padding-left:20px;">
-          <li> <strong> Contatar executor para revisão dos itens não conformes<strong></li>
-          <li> <strong> Agendar nova vistoria para as pendências críticas<strong></li>
-          <li> <strong> Documentar ações corretivas implementadas<strong></li>
-          <li> <strong> ✅ Atualizar status no Produttivo após correções<strong></li>
+          <li><strong>Contatar executor para revisão dos itens não conformes</strong></li>
+          <li><strong>Agendar nova vistoria para as pendências críticas</strong></li>
+          <li><strong>Documentar ações corretivas implementadas</strong></li>
+          <li><strong>✅ Atualizar status no Produttivo após correções</strong></li>
         </ul>
       </div>
 
@@ -282,7 +251,7 @@ function montarHtmlRelatorioVistorias_(linhas, resumo) {
 
 function montarTextoRelatorioVistorias_(linhas, resumo) {
   const cabecalho = [
-    'VISTORIAS PARA REVISÃO',
+    'VISTORIAS PARA REVISAO',
     '',
     'Data do relatorio: ' + formatarDataHoraRel_(new Date()),
     'Total de vistorias: ' + linhas.length,
@@ -358,31 +327,4 @@ function escapeHtmlRel_(texto) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
-}
-function rotinaSemanalRelatorio() {
-  enviarRelatorioConsolidadoVistorias();
-}
-
-function criarTriggerRelatorioSegundaFeira() {
-  const nomeFuncao = 'rotinaSemanalRelatorio';
-
-  const triggers = ScriptApp.getProjectTriggers();
-
-  for (let i = 0; i < triggers.length; i++) {
-    if (triggers[i].getHandlerFunction() === nomeFuncao) {
-      ScriptApp.deleteTrigger(triggers[i]);
-    }
-  }
-
-  ScriptApp.newTrigger(nomeFuncao)
-    .timeBased()
-    .onWeekDay(ScriptApp.WeekDay.MONDAY)
-    .atHour(8)
-    .create();
-
-  logInfo_('Code.gs', 'criarTriggerRelatorioSegundaFeira', 'Trigger semanal criado com sucesso', {
-    funcao: nomeFuncao,
-    dia: 'segunda-feira',
-    hora: 8
-  });
 }
