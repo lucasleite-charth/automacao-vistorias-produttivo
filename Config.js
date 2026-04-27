@@ -1,142 +1,140 @@
-function getSheet_(name) {
-  return SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+var CONFIG_CACHE = null;
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('Emails')
+    .addItem('Preparar lembretes', 'prepararEmailsLembrete')
+    .addItem('Enviar emails', 'enviarEmailsVistoria')
+    .addItem('Preparar e enviar', 'prepararEEnviarEmails')
+    .addToUi();
 }
 
-function limparAba_(sh) {
-  sh.clearContents();
+function prepararEEnviarEmails() {
+  limparConfigCache_();
+  prepararEmailsLembrete();
+  enviarEmailsVistoria();
 }
 
-function setHeaderAndData_(sh, header, data) {
-  limparAba_(sh);
-  if (header && header.length) {
-    sh.getRange(1, 1, 1, header.length).setValues([header]);
+/* =========================
+   CONFIG
+========================= */
+
+function getConfig_() {
+  if (CONFIG_CACHE) return CONFIG_CACHE;
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName('Config');
+
+  if (!sh) {
+    throw new Error('A aba "Config" nao foi encontrada.');
   }
-  if (data && data.length) {
-    sh.getRange(2, 1, data.length, data[0].length).setValues(data);
+
+  const ultimaLinha = sh.getLastRow();
+  const ultimaColuna = sh.getLastColumn();
+
+  if (ultimaLinha < 2 || ultimaColuna < 2) {
+    throw new Error('A aba "Config" precisa ter cabecalho e pelo menos uma linha com chave e valor.');
   }
+
+  const values = sh.getRange(1, 1, ultimaLinha, Math.max(2, ultimaColuna)).getValues();
+  const cfg = {};
+
+  for (let i = 1; i < values.length; i++) {
+    const chave = normalizarChaveConfig_(values[i][0]);
+    const valor = values[i][1];
+
+    if (chave) {
+      cfg[chave] = valor;
+    }
+  }
+
+  CONFIG_CACHE = cfg;
+  return cfg;
 }
 
-function parseNumber_(val) {
-  if (val === null || val === '' || typeof val === 'undefined') return 0;
-  var str = String(val).replace('.', '').replace(',', '.');
-  var n = parseFloat(str);
-  return isNaN(n) ? 0 : n;
+function limparConfigCache_() {
+  CONFIG_CACHE = null;
 }
 
-function parseDate_(val) {
-  if (Object.prototype.toString.call(val) === '[object Date]') return val;
-  if (val === null || val === '') return null;
-  var tryDate = new Date(val);
-  if (!isNaN(tryDate.getTime())) return tryDate;
-  return null;
+function getPastaDriveId_() {
+  return getConfigTexto_('pastadriveid', '');
 }
 
-function formatDate_(date) {
-  if (!date) return '';
-  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'dd/MM/yyyy');
+function getCalendarId_() {
+  return getConfigTexto_('calendarid', 'primary');
 }
 
-function gerarHashEvento_(obj) {
-  const payload = JSON.stringify({
-    idAtividade: obj.idAtividade,
-    titulo: obj.titulo,
-    dataFim: formatarIso_(obj.dataFim),
-    criticidade: obj.criticidade,
-    dataRevisao: formatarIso_(obj.dataRevisao),
-    percentual: Number(obj.percentual) || 0
-  });
-
-  const digest = Utilities.computeDigest(
-    Utilities.DigestAlgorithm.MD5,
-    payload
-  );
-
-  return digest.map(function(b) {
-    const v = (b < 0 ? b + 256 : b).toString(16);
-    return v.length === 1 ? '0' + v : v;
-  }).join('');
+function getEmailParaDefault_() {
+  return getConfigTexto_('email_para', '');
 }
 
-function getOrCreateColumn_(sheet, cabecalho, nomeColuna) {
-  let idx = cabecalho.indexOf(nomeColuna);
-  if (idx !== -1) return idx;
-
-  idx = cabecalho.length;
-  sheet.getRange(1, idx + 1).setValue(nomeColuna);
-  return idx;
+function getEmailCcDefault_() {
+  return getConfigTexto_('email_cc', '');
 }
 
-function normalizarData_(valor) {
-  if (!valor) return null;
+function getDiasLembrete_() {
+  const valor = getConfigTexto_('dias_lembrete', '');
+  const padrao = [15, 7, 1, 0];
 
-  const data = valor instanceof Date ? valor : new Date(valor);
-  if (isNaN(data.getTime())) return null;
+  if (!valor) return padrao;
 
-  return data;
+  const lista = valor
+    .split(',')
+    .map(function(s) {
+      return parseInt(String(s).trim(), 10);
+    })
+    .filter(function(n) {
+      return !isNaN(n);
+    });
+
+  return lista.length ? lista : padrao;
 }
 
-function normalizarTexto_(texto) {
-  return String(texto || '')
+function getPrazoRevisaoPorCriticidade_(criticidade) {
+  const c = normalizarTexto_(criticidade);
+
+  if (c === 'alta') {
+    return getConfigNumero_('dias_revisao_alta', 15);
+  }
+
+  if (c === 'media') {
+    return getConfigNumero_('dias_revisao_media', 30);
+  }
+
+  return getConfigNumero_('dias_revisao_baixa', 60);
+}
+
+function getConfigTexto_(chave, valorPadrao) {
+  const cfg = getConfig_();
+  const valor = cfg[normalizarChaveConfig_(chave)];
+
+  if (valor === null || valor === undefined || String(valor).trim() === '') {
+    return valorPadrao;
+  }
+
+  return String(valor).trim();
+}
+
+function getConfigNumero_(chave, valorPadrao) {
+  const texto = getConfigTexto_(chave, '');
+  const numero = parseInt(texto, 10);
+  return isNaN(numero) ? valorPadrao : numero;
+}
+
+function normalizarChaveConfig_(valor) {
+  return String(valor || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, '')
+    .replace(/[^\w]/g, '');
+}
+
+function normalizarTexto_(valor) {
+  return String(valor || '')
     .trim()
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
-}
-
-function formatarIso_(data) {
-  const d = normalizarData_(data);
-  return d ? d.toISOString() : '';
-}
-
-function formatarData_(data) {
-  const d = normalizarData_(data);
-  if (!d) return 'N/D';
-  return Utilities.formatDate(d, Session.getScriptTimeZone(), 'dd/MM/yyyy HH:mm');
-}
-
-function existeHashEventoNaPlanilha_(hash) {
-  var sh = getSheet_('Vistorias_Tratadas');
-  var values = sh.getRange(2, 19, sh.getLastRow() - 1, 1).getValues(); // col 19 = hash_evento
-  for (var i = 0; i < values.length; i++) {
-    if (values[i][0] === hash) return true;
-  }
-  return false;
-}
-function getColIndex_(cabecalho, nomeColuna) {
-  const idx = cabecalho.indexOf(nomeColuna);
-  if (idx === -1) {
-    throw new Error('Coluna obrigatória não encontrada: ' + nomeColuna);
-  }
-  return idx;
-}
-
-function getOrCreateColumn_(sheet, cabecalho, nomeColuna) {
-  let idx = cabecalho.indexOf(nomeColuna);
-  if (idx !== -1) return idx;
-
-  idx = cabecalho.length;
-  sheet.getRange(1, idx + 1).setValue(nomeColuna);
-  return idx;
-}
-
-function normalizarData_(valor) {
-  if (!valor) return null;
-
-  const data = valor instanceof Date ? valor : new Date(valor);
-  if (isNaN(data.getTime())) return null;
-
-  return data;
-}
-
-function normalizarTexto_(texto) {
-  return String(texto || '')
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
-}
-
-function formatarIso_(data) {
-  const d = normalizarData_(data);
-  return d ? d.toISOString() : '';
 }
