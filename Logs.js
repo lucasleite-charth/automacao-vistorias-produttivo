@@ -1,3 +1,19 @@
+function limparLogsSeExceder_(limite) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const aba = ss.getSheetByName('Logs');
+
+  if (!aba) return;
+
+  const ultimaLinha = aba.getLastRow();
+
+  if (ultimaLinha <= limite) return;
+
+  const excesso = ultimaLinha - limite;
+
+  // mantém cabeçalho (linha 1)
+  aba.deleteRows(2, excesso);
+}
+
 function garantirAbaLogs_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let aba = ss.getSheetByName('Logs');
