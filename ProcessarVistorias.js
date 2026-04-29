@@ -23,35 +23,39 @@ function processarVistorias() {
     const cabAt = atVals[0];
     const cabFo = foVals.length ? foVals[0] : [];
 
-    const idxTitulo = cabAt.indexOf('Título');
-    const idxForm = cabAt.indexOf('Formulário');
-    const idxExecutores = cabAt.indexOf('Executores');
-    const idxStatus = cabAt.indexOf('Status');
-    const idxDataIni = cabAt.indexOf('Data e hora inicial');
-    const idxDataFim = cabAt.indexOf('Data e hora final');
-    const idxIdAtividade = cabAt.indexOf('ID da Atividade');
+    const idxTitulo = encontrarColuna_(cabAt, ['Título', 'Titulo']);
+    const idxForm = encontrarColuna_(cabAt, ['Formulário', 'Formulario']);
+    const idxExecutores = encontrarColuna_(cabAt, ['Executores']);
+    const idxStatus = encontrarColuna_(cabAt, ['Status']);
+    const idxDataIni = encontrarColuna_(cabAt, ['Data e hora inicial']);
+    const idxDataFim = encontrarColuna_(cabAt, ['Data e hora final']);
+    const idxIdAtividade = encontrarColuna_(cabAt, ['ID da Atividade', 'ID Atividade', 'id_atividade']);
 
+    const idxIdFo = encontrarColuna_(cabFo, ['ID da Atividade', 'ID Atividade', 'id_atividade']);
+    const idxAtivoFo = encontrarColuna_(cabFo, ['Atividade']);
+    const idxLocalFo = encontrarColuna_(cabFo, ['Local/Cliente', 'Local Cliente']);
     const idxDataSync = encontrarColuna_(cabFo, [
       'Data de sincronização',
       'Data de sincronizacao',
       'Data Sincronização',
       'Data Sincronizacao',
       'Sincronização',
-      'Sincronizacao'
+      'Sincronizacao',
+      'data_sincronizacao'
     ]);
-
-    const idxAtivoFo = cabFo.indexOf('Atividade');
-    const idxLocalFo = cabFo.indexOf('Local/Cliente');
-    const idxPont = cabFo.indexOf('Pontuação');
-    const idxPontMax = cabFo.indexOf('Pontuação máxima');
+    const idxPont = encontrarColuna_(cabFo, ['Pontuação', 'Pontuacao']);
+    const idxPontMax = encontrarColuna_(cabFo, ['Pontuação máxima', 'Pontuacao maxima']);
 
     validarIndice_(idxTitulo, 'Título', 'Base_Atividades');
-    validarIndice_(idxIdAtividade, 'ID da Atividade', 'Base_Atividades');
     validarIndice_(idxStatus, 'Status', 'Base_Atividades');
+    validarIndice_(idxIdAtividade, 'ID da Atividade', 'Base_Atividades');
     validarIndice_(idxDataSync, 'Data de sincronizacao', 'Base_Formularios');
-    validarIndice_(idxAtivoFo, 'Atividade', 'Base_Formularios');
     validarIndice_(idxPont, 'Pontuação', 'Base_Formularios');
     validarIndice_(idxPontMax, 'Pontuação máxima', 'Base_Formularios');
+
+    if (idxIdFo === -1 && idxAtivoFo === -1) {
+      throw new Error('Nao encontrei "ID da Atividade" nem "Atividade" em Base_Formularios.');
+    }
 
     const criticosLabels = [
       'HÁ MENORES TRABALHANDO? SE SIM, QUANTOS E QUAIS FUNÇÕES.',
@@ -62,25 +66,29 @@ function processarVistorias() {
     ];
 
     const idxCriticos = criticosLabels.map(function(lbl) {
-      return cabFo.indexOf(lbl);
+      return encontrarColuna_(cabFo, [lbl]);
     });
 
     const mapaForm = {};
 
     for (let i = 1; i < foVals.length; i++) {
-      const linha = foVals[i];
-      const chaveAtv = linha[idxAtivoFo] || linha[idxLocalFo] || '';
-      if (!chaveAtv) continue;
+      const linhaFo = foVals[i];
 
-      const pont = parseNumber_(linha[idxPont]);
-      const pontMax = parseNumber_(linha[idxPontMax]);
-      let naoConformes = 0;
-      let criticosIrregulares = 0;
+      const chaveFormulario = idxIdFo >= 0
+        ? obterTextoProcessar_(linhaFo[idxIdFo])
+        : obterTextoProcessar_(linhaFo[idxAtivoFo]);
+
+      if (!chaveFormulario) continue;
+
+      const pontFo = parseNumber_(linhaFo[idxPont]);
+      const pontMaxFo = parseNumber_(linhaFo[idxPontMax]);
+      let naoConformesFo = 0;
+      let criticosIrregularesFo = 0;
 
       idxCriticos.forEach(function(idx) {
         if (idx < 0) return;
 
-        const val = String(linha[idx] || '').toLowerCase();
+        const val = String(linhaFo[idx] || '').toLowerCase();
         if (!val) return;
 
         if (
@@ -88,27 +96,47 @@ function processarVistorias() {
           val.indexOf('nao conforme') !== -1 ||
           val.indexOf('irregular') !== -1
         ) {
-          naoConformes++;
-          criticosIrregulares++;
+          naoConformesFo++;
+          criticosIrregularesFo++;
         }
       });
 
-      mapaForm[chaveAtv] = {
-        pontuacao: pont,
-        pontuacaoMaxima: pontMax,
-        naoConformes: naoConformes,
-        criticosIrregulares: criticosIrregulares,
-        dataSincronizacao: idxDataSync >= 0 ? parseDate_(linha[idxDataSync]) : ''
+      mapaForm[chaveFormulario] = {
+        pontuacao: pontFo,
+        pontuacaoMaxima: pontMaxFo,
+        naoConformes: naoConformesFo,
+        criticosIrregulares: criticosIrregularesFo,
+        dataSincronizacao: parseDate_(linhaFo[idxDataSync]),
+        atividade: idxAtivoFo >= 0 ? obterTextoProcessar_(linhaFo[idxAtivoFo]) : '',
+        local: idxLocalFo >= 0 ? obterTextoProcessar_(linhaFo[idxLocalFo]) : ''
       };
     }
 
+    logInfo_(ARQUIVO, FUNCAO, 'Mapa de formularios montado', {
+      totalChavesFormulario: Object.keys(mapaForm).length,
+      chaveUsada: idxIdFo >= 0 ? 'ID da Atividade' : 'Atividade'
+    });
+
     const headerVit = [
-      'id_atividade', 'titulo_vistoria', 'formulario', 'data_sincronizacao', 'executor',
-      'status', 'data_programada', 'data_finalizacao', 'chave_local',
-      'pontuacao', 'pontuacao_maxima', 'percentual_conformidade',
-      'qtde_nao_conformes', 'qtde_campos_criticos_irregulares',
-      'criticidade', 'proxima_revisao', 'responsavel_email',
-      'observacoes', 'hash_evento'
+      'id_atividade',
+      'titulo_vistoria',
+      'formulario',
+      'data_sincronizacao',
+      'executor',
+      'status',
+      'data_programada',
+      'data_finalizacao',
+      'chave_local',
+      'pontuacao',
+      'pontuacao_maxima',
+      'percentual_conformidade',
+      'qtde_nao_conformes',
+      'qtde_campos_criticos_irregulares',
+      'criticidade',
+      'proxima_revisao',
+      'responsavel_email',
+      'observacoes',
+      'hash_evento'
     ];
 
     const dadosVit = [];
@@ -116,34 +144,28 @@ function processarVistorias() {
     const resumoCriticidade = { alta: 0, media: 0, baixa: 0 };
 
     for (let i = 1; i < atVals.length; i++) {
-      const linha = atVals[i];
+      const linhaAt = atVals[i];
 
-      const titulo = linha[idxTitulo] || '';
-      const formulario = linha[idxForm] || '';
-      const executor = linha[idxExecutores] || '';
-      const status = linha[idxStatus] || '';
-      const statusNorm = String(status || '').toLowerCase();
-      const dataProg = parseDate_(linha[idxDataIni]);
-      const dataFim = parseDate_(linha[idxDataFim]);
-      const idAtv = linha[idxIdAtividade] || '';
+      const titulo = obterTextoProcessar_(linhaAt[idxTitulo]);
+      const formulario = idxForm >= 0 ? obterTextoProcessar_(linhaAt[idxForm]) : '';
+      const executor = idxExecutores >= 0 ? obterTextoProcessar_(linhaAt[idxExecutores]) : '';
+      const status = obterTextoProcessar_(linhaAt[idxStatus]);
+      const statusNorm = normalizarProcessar_(status);
+      const dataProg = idxDataIni >= 0 ? parseDate_(linhaAt[idxDataIni]) : '';
+      const dataFim = idxDataFim >= 0 ? parseDate_(linhaAt[idxDataFim]) : '';
+      const idAtv = obterTextoProcessar_(linhaAt[idxIdAtividade]);
 
-      const chaveForm = titulo;
+      const chaveForm = idxIdFo >= 0 ? idAtv : titulo;
 
       const form = mapaForm[chaveForm] || {
         pontuacao: 0,
         pontuacaoMaxima: 0,
         naoConformes: 0,
         criticosIrregulares: 0,
-        dataSincronizacao: ''
+        dataSincronizacao: '',
+        atividade: '',
+        local: ''
       };
-
-      const dataSync = form.dataSincronizacao || '';
-
-      const chaveLocal = titulo + ' | ' + Utilities.formatDate(
-        dataSync || new Date(),
-        Session.getScriptTimeZone(),
-        'dd/MM/yyyy'
-      );
 
       if (!mapaForm[chaveForm]) {
         logWarn_(ARQUIVO, FUNCAO, 'Formulario nao encontrado para atividade', {
@@ -154,15 +176,27 @@ function processarVistorias() {
         });
       }
 
+      const dataSync = form.dataSincronizacao || '';
       const pont = form.pontuacao;
       const pontMax = form.pontuacaoMaxima;
       const perc = pontMax > 0 ? pont / pontMax : 0;
       const naoConf = form.naoConformes;
       const critIrreg = form.criticosIrregulares;
 
+      const dataChave = dataSync || dataFim || dataProg || new Date();
+
+      const chaveLocal = titulo + ' | ' + Utilities.formatDate(
+        dataChave,
+        Session.getScriptTimeZone(),
+        'dd/MM/yyyy'
+      );
+
       let criticidade = 'Baixa';
-      if (perc < 0.7 || critIrreg > 0) criticidade = 'Alta';
-      else if (perc < 0.9) criticidade = 'Média';
+      if (perc < 0.7 || critIrreg > 0) {
+        criticidade = 'Alta';
+      } else if (perc < 0.9) {
+        criticidade = 'Média';
+      }
 
       if (criticidade === 'Alta') resumoCriticidade.alta++;
       else if (criticidade === 'Média') resumoCriticidade.media++;
@@ -198,7 +232,7 @@ function processarVistorias() {
         hashEvento
       ]);
 
-      if (statusNorm === 'concluída' || statusNorm === 'concluida') {
+      if (statusNorm === 'concluida') {
         if (perc < 1 || naoConf > 0 || critIrreg > 0) {
           dadosPen.push([
             idAtv,
@@ -218,9 +252,15 @@ function processarVistorias() {
     setHeaderAndData_(shVit, headerVit, dadosVit);
 
     setHeaderAndData_(shPen, [
-      'id_atividade', 'titulo_vistoria', 'data_sincronizacao', 'criticidade',
-      'percentual_conformidade', 'qtde_nao_conformes', 'proxima_revisao',
-      'acao_recomendada', 'detalhes'
+      'id_atividade',
+      'titulo_vistoria',
+      'data_sincronizacao',
+      'criticidade',
+      'percentual_conformidade',
+      'qtde_nao_conformes',
+      'proxima_revisao',
+      'acao_recomendada',
+      'detalhes'
     ], dadosPen);
 
     formatarAbaVistoriasTratadas_(shVit);
@@ -264,6 +304,19 @@ function encontrarColuna_(cabecalho, nomesPossiveis) {
   }
 
   return -1;
+}
+
+function obterTextoProcessar_(valor) {
+  if (valor === null || valor === undefined) return '';
+  return String(valor).trim();
+}
+
+function normalizarProcessar_(valor) {
+  return String(valor || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
 }
 
 function formatarAbaVistoriasTratadas_(sh) {
