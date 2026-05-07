@@ -1,6 +1,7 @@
-function myFunction(){
+function myFunction() {
   SpreadsheetApp.getActiveSpreadsheet();
-  DriveApp
-  MailApp
-  ScriptApp
+  DriveApp.getRootFolder();
+  MailApp.getRemainingDailyQuota();
+  ScriptApp.getProjectTriggers();
+  CalendarApp.getDefaultCalendar();
 }
