@@ -1,290 +1,191 @@
-//Calendar
-function criarEventosCalendar() {
-  const shVit = getSheet_('Vistorias_Tratadas');
+// Calendar.gs
 
-  if (!shVit || shVit.getLastRow() < 2) {
+function criarEventosCalendar() {
+  const sh = getSheet_('Vistorias_Tratadas');
+
+  if (!sh || sh.getLastRow() < 2) {
     Logger.log('Nenhuma vistoria para processar no Calendar');
-    return { criados: [], atualizados: [] };
+    return { criados: [] };
   }
-  log_('INFO', 'Iniciando criação de eventos no Calendar');
+
   const config = getConfig_();
-  const calendarId = config.calendarId || 'primary';
-  const diasAntecedencia = parseInt(config.dias_aviso, 10) || 7;
-  log_('INFO', 'calendarId: ' + calendarId);
-  log_('INFO', 'diasAntecedencia: ' + diasAntecedencia);
+  Logger.log('CONFIG LIDO: ' + JSON.stringify(config));
+
+  const calendarId = config.calendarId || config.calendarid || config.calendar_id;
+
+  if (!calendarId) {
+    throw new Error('calendarId não configurado na aba Config.');
+  }
 
   const calendar = CalendarApp.getCalendarById(calendarId);
+
   if (!calendar) {
     throw new Error('Calendário não encontrado: ' + calendarId);
   }
 
-  const dados = shVit.getDataRange().getValues();
-  const cabecalho = dados[0];
+  const dados = sh.getDataRange().getValues();
+  const cab = dados[0];
 
-  const idxIdAtv = getColIndex_(cabecalho, 'id_atividade');
-  const idxTitulo = getColIndex_(cabecalho, 'titulo_vistoria');
-  const idxDataSync = getColIndex_(cabecalho, 'data_sincronizacao');
-  const idxDataFim = getColIndex_(cabecalho, 'data_finalizacao');
-  const idxCriticidade = getColIndex_(cabecalho, 'criticidade');
-  const idxProxRevisao = getColIndex_(cabecalho, 'proxima_revisao');
-  const idxPontPerc = getColIndex_(cabecalho, 'percentual_conformidade');
-  const idxHash = getColIndex_(cabecalho, 'hash_evento');
-  const idxEventId = getOrCreateColumn_(shVit, cabecalho, 'event_id');
+  const idx = {
+    id: cab.indexOf('id_atividade'),
+    titulo: cab.indexOf('titulo_vistoria'),
+    status: cab.indexOf('status_conformidade'),
+    criticidade: cab.indexOf('criticidade'),
+    percentual: cab.indexOf('percentual_conformidade'),
+    naoConf: cab.indexOf('qtde_nao_conformes'),
+    criticos: cab.indexOf('qtde_campos_criticos_irregulares'),
+    dataFim: cab.indexOf('data_finalizacao'),
+    dataSync: cab.indexOf('data_sincronizacao'),
+    revisao: cab.indexOf('proxima_revisao'),
+    l15: cab.indexOf('lembrete_15_dias'),
+    l28: cab.indexOf('lembrete_28_dias')
+  };
 
-  const agora = new Date();
-  const eventosCriados = [];
-  const eventosAtualizados = [];
-  const LIMITE_EVENTOS_POR_EXECUCAO = 50;
-  let processados = 0;
+  const colEventRev = getOrCreateColumn_(sh, cab, 'event_id_revisao');
+  const colEvent15 = getOrCreateColumn_(sh, cab, 'event_id_lembrete_15');
+  const colEvent28 = getOrCreateColumn_(sh, cab, 'event_id_lembrete_28');
 
-  log_('INFO', 'Iniciando criação de eventos no Calendar');
+  const criados = [];
 
   for (let i = 1; i < dados.length; i++) {
-    if (processados >= LIMITE_EVENTOS_POR_EXECUCAO) {
-      Logger.log('Limite de eventos por execução atingido.');
-      break;
-    }
-    log_('INFO', 'Processando linha ' + i);
-
     const linha = dados[i];
 
-    const idAtv = linha[idxIdAtv];
-    const titulo = linha[idxTitulo] || 'Revisão de Vistoria';
-    const dataSync = linha[idxDataSync];
-    const dataFim = linha[idxDataFim];
-    const criticidade = linha[idxCriticidade] || 'Baixa';
-    const proxRevisao = linha[idxProxRevisao];
-    const percentual = Number(linha[idxPontPerc]) || 0;
-    const hashAtual = linha[idxHash];
-    const eventIdSalvo = idxEventId >= 0 ? linha[idxEventId] : '';
+    const id = linha[idx.id];
+    const titulo = linha[idx.titulo];
 
-    if (!idAtv || !proxRevisao){log_('WARN', 'Linha ignorada: sem id ou data'); 
-    continue;
-    }
-    const dataRevisao = normalizarData_(proxRevisao);
-    if (!dataRevisao) continue;
-    if (dataRevisao <= agora){log_('INFO', 'Linha ignorada: data já passou');
-    continue;
-    }
-    const diasAteRevisao = Math.ceil((dataRevisao - agora) / (1000 * 60 * 60 * 24));
-    if (diasAteRevisao > diasAntecedencia) {
-    log_('INFO', 'Linha ignorada: fora do prazo');
-    continue;
-    }
-    const novoHash = gerarHashEvento_({
-      idAtividade: idAtv,
-      titulo: titulo,
-      dataFim: dataFim,
-      criticidade: criticidade,
-      dataRevisao: dataRevisao,
-      percentual: percentual
-    });
+    if (!id || !titulo) continue;
 
-    if (eventIdSalvo) {
-      const eventoExistente = calendar.getEventById(eventIdSalvo);
+    const status = normalizarTexto_(linha[idx.status]);
 
-      if (eventoExistente) {
-        log_('INFO', 'Atualizando evento: ' + idAtv);
-        if (hashAtual === novoHash) {
-          continue;
-        }
+    if (status === 'conforme') {
+      const idEvento = criarEventoSeNaoExiste_(calendar, sh, i + 1, colEventRev + 1, linha[idx.revisao], '🔄 Revisão 120 dias', linha, idx);
+      if (idEvento) criados.push(idEvento);
+    } else {
+      const id15 = criarEventoSeNaoExiste_(calendar, sh, i + 1, colEvent15 + 1, linha[idx.l15], '⚠️ Lembrete 15 dias', linha, idx);
+      const id28 = criarEventoSeNaoExiste_(calendar, sh, i + 1, colEvent28 + 1, linha[idx.l28], '🚨 Lembrete 28 dias', linha, idx);
 
-        atualizarEventoVistoria_(eventoExistente, {
-          idAtividade: idAtv,
-          titulo: titulo,
-          dataSync: dataSync,
-          dataFim: dataFim,
-          criticidade: criticidade,
-          dataRevisao: dataRevisao,
-          percentual: percentual,
-          hash: novoHash
-        });
-
-        shVit.getRange(i + 1, idxHash + 1).setValue(novoHash);
-        eventosAtualizados.push(eventoExistente.getId());
-        processados++;
-        continue;
-      }
-    }
-    log_('INFO', 'Criando evento: ' + idAtv);
-      const evento = criarEventoVistoria_({
-      idAtividade: idAtv,
-      titulo: titulo,
-      dataSync: dataSync,
-      dataFim: dataFim,
-      criticidade: criticidade,
-      dataRevisao: dataRevisao,
-      percentual: percentual,
-      hash: novoHash
-    }, calendar);
-
-    if (evento) {
-      log_('INFO', 'Evento criado: ' + evento.id);
-      shVit.getRange(i + 1, idxEventId + 1).setValue(evento.id);
-      shVit.getRange(i + 1, idxHash + 1).setValue(novoHash);
-      eventosCriados.push(evento.id);
-      processados++;
+      if (id15) criados.push(id15);
+      if (id28) criados.push(id28);
     }
   }
 
-  Logger.log(
-    'Calendar: ' +
-    eventosCriados.length + ' criados, ' +
-    eventosAtualizados.length + ' atualizados.'
-  );
-  log_(
-  'INFO',
-  'Finalizado: ' +
-  eventosCriados.length + ' criados, ' +
-  eventosAtualizados.length + ' atualizados'
-);
-  return {
-    criados: eventosCriados,
-    atualizados: eventosAtualizados
-  };
+  Logger.log('Eventos criados: ' + criados.length);
+
+  return { criados: criados };
 }
 
-function criarEventoVistoria_(dados, calendar) {
-  const ARQUIVO = 'Calendar.gs';
-  const FUNCAO = 'criarEventoVistoria_';
+function criarEventoSeNaoExiste_(calendar, sh, linhaPlanilha, colunaEventId, dataEvento, tipo, linha, idx) {
+  if (!dataEvento) return '';
 
-  const tituloEvento = montarTituloEvento_(dados);
-  const descricao = montarDescricaoEvento_(dados);
+  const data = new Date(dataEvento);
+  if (isNaN(data)) return '';
 
-  const inicio = new Date(dados.dataRevisao);
-  const fim = new Date(inicio);
-  fim.setHours(fim.getHours() + 2);
+  const agora = new Date();
+  if (data <= agora) return '';
 
-  const maxTentativas = 5;
-  let tentativa = 0;
+  const eventIdExistente = sh.getRange(linhaPlanilha, colunaEventId).getValue();
+  if (eventIdExistente) return '';
 
-  while (tentativa < maxTentativas) {
-    try {
-      const evento = calendar.createEvent(tituloEvento, inicio, fim, {
-        description: descricao,
-        location: 'Revisao de Vistoria - Produttivo'
-      });
+  const titulo = tipo + ' - ' + linha[idx.titulo];
 
-      aplicarCorEvento_(evento, dados.criticidade);
-      configurarLembretes_(evento, dados.criticidade);
+  const inicio = new Date(data);
+  const fim = new Date(data);
+  fim.setHours(fim.getHours() + 1);
 
-      Utilities.sleep(500);
+  const descricao = [
+    'ID: ' + linha[idx.id],
+    'Vistoria: ' + linha[idx.titulo],
+    'Status: ' + linha[idx.status],
+    'Data Sincronização: ' + formatarData_(linha[idx.dataSync]),
+    'Data Finalização: ' + formatarData_(linha[idx.dataFim]),
+    'Conformidade: ' + Math.round((Number(linha[idx.percentual]) || 0) * 100) + '%',
+    'Não conformes: ' + (linha[idx.naoConf] || 0),
+    'Críticos: ' + (linha[idx.criticos] || 0)
+  ].join('\n');
 
-      logInfo_(ARQUIVO, FUNCAO, 'Evento criado com sucesso', {
-        idAtividade: dados.idAtividade,
-        eventId: evento.getId(),
-        titulo: tituloEvento
-      });
-
-      return {
-        id: evento.getId(),
-        titulo: tituloEvento,
-        data: inicio
-      };
-    } catch (error) {
-      const msg = String(error);
-
-      if (
-        msg.includes('too many calendars or calendar events in a short time') ||
-        msg.includes('Service invoked too many times')
-      ) {
-        const esperaMs = Math.pow(2, tentativa) * 1000 + Math.floor(Math.random() * 500);
-
-        logWarn_(ARQUIVO, FUNCAO, 'Rate limit no Calendar, aguardando nova tentativa', {
-          idAtividade: dados.idAtividade,
-          tentativa: tentativa + 1,
-          maxTentativas: maxTentativas,
-          esperaMs: esperaMs
-        });
-
-        Utilities.sleep(esperaMs);
-        tentativa++;
-        continue;
-      }
-
-      logErro_(ARQUIVO, FUNCAO, 'Erro ao criar evento', {
-        idAtividade: dados.idAtividade,
-        mensagemErro: error.message || String(error),
-        stack: error.stack || ''
-      });
-
-      return null;
-    }
-  }
-
-  logErro_(ARQUIVO, FUNCAO, 'Falha apos varias tentativas para criar evento', {
-    idAtividade: dados.idAtividade,
-    maxTentativas: maxTentativas
+  const evento = calendar.createEvent(titulo, inicio, fim, {
+    description: descricao,
+    location: 'Revisão de Vistoria - Produttivo'
   });
 
-  return null;
+  aplicarCorEvento_(evento, linha[idx.criticidade]);
+  configurarLembretes_(evento, linha[idx.criticidade]);
+
+  sh.getRange(linhaPlanilha, colunaEventId).setValue(evento.getId());
+
+  return evento.getId();
 }
 
 function limparEventosAntigos() {
-  const shVit = getSheet_('Vistorias_Tratadas');
-  if (!shVit || shVit.getLastRow() < 2) {
+  const sh = getSheet_('Vistorias_Tratadas');
+
+  if (!sh || sh.getLastRow() < 2) {
     Logger.log('Nenhuma linha para limpar.');
     return 0;
   }
 
   const config = getConfig_();
-  const calendarId = config.calendarId || 'primary';
+  const calendarId = config.calendarId || config.calendarid || config.calendar_id;
+
+  if (!calendarId) {
+    throw new Error('calendarId não configurado na aba Config.');
+  }
 
   const calendar = CalendarApp.getCalendarById(calendarId);
+
   if (!calendar) {
     throw new Error('Calendário não encontrado: ' + calendarId);
   }
 
-  const dados = shVit.getDataRange().getValues();
-  const cabecalho = dados[0];
+  const dados = sh.getDataRange().getValues();
+  const cab = dados[0];
 
-  const idxEventId = cabecalho.indexOf('event_id');
-  const idxProxRevisao = cabecalho.indexOf('proxima_revisao');
-
-  if (idxEventId === -1 || idxProxRevisao === -1) {
-    Logger.log('Colunas event_id ou proxima_revisao não encontradas.');
-    return 0;
-  }
+  const pares = [
+    { ev: cab.indexOf('event_id_revisao'), dt: cab.indexOf('proxima_revisao') },
+    { ev: cab.indexOf('event_id_lembrete_15'), dt: cab.indexOf('lembrete_15_dias') },
+    { ev: cab.indexOf('event_id_lembrete_28'), dt: cab.indexOf('lembrete_28_dias') }
+  ];
 
   const agora = new Date();
   let removidos = 0;
 
   for (let i = 1; i < dados.length; i++) {
-    const linha = dados[i];
-    const eventId = linha[idxEventId];
-    const proxRevisao = normalizarData_(linha[idxProxRevisao]);
+    pares.forEach(function(par) {
+      if (par.ev < 0 || par.dt < 0) return;
 
-    if (!eventId || !proxRevisao) continue;
-    if (proxRevisao >= agora) continue;
+      const eventId = dados[i][par.ev];
+      const dataEvento = new Date(dados[i][par.dt]);
 
-    const evento = calendar.getEventById(eventId);
-    if (evento) {
-      evento.deleteEvent();
-      removidos++;
-    }
+      if (!eventId || isNaN(dataEvento)) return;
+      if (dataEvento >= agora) return;
 
-    shVit.getRange(i + 1, idxEventId + 1).clearContent();
+      const evento = calendar.getEventById(eventId);
+
+      if (evento) {
+        evento.deleteEvent();
+        removidos++;
+      }
+
+      sh.getRange(i + 1, par.ev + 1).clearContent();
+    });
   }
 
-  Logger.log('Removidos ' + removidos + ' eventos antigos do Calendar');
+  Logger.log('Eventos antigos removidos: ' + removidos);
   return removidos;
 }
 
 function sincronizarCalendarCompleto() {
-  Logger.log('Iniciando sincronização completa Calendar...');
   const removidos = limparEventosAntigos();
   const resultado = criarEventosCalendar();
 
   Logger.log(
     'Sincronização concluída. Removidos: ' + removidos +
-    ', Criados: ' + resultado.criados.length +
-    ', Atualizados: ' + resultado.atualizados.length
+    ', Criados: ' + resultado.criados.length
   );
 
   return {
     removidos: removidos,
-    criados: resultado.criados,
-    atualizados: resultado.atualizados
+    criados: resultado.criados
   };
 }
 
@@ -293,63 +194,29 @@ function aplicarCorEvento_(evento, criticidade) {
 
   if (crit === 'alta') {
     evento.setColor(CalendarApp.EventColor.RED);
-    return;
-  }
-
-  if (crit === 'media' || crit === 'média') {
+  } else if (crit === 'media' || crit === 'média') {
     evento.setColor(CalendarApp.EventColor.YELLOW);
-    return;
+  } else {
+    evento.setColor(CalendarApp.EventColor.GREEN);
   }
-
-  evento.setColor(CalendarApp.EventColor.GREEN);
 }
 
 function configurarLembretes_(evento, criticidade) {
+  evento.removeAllReminders();
+
   const crit = normalizarTexto_(criticidade);
-  if (crit === 'baixa') return;
 
-  evento.addPopupReminder(1440);
-}
-
-function montarTituloEvento_(dados) {
-  return '🔄 ' + dados.criticidade + ': ' + dados.titulo + ' (' + dados.idAtividade + ')';
-}
-
-function montarDescricaoEvento_(dados) {
-  return [
-    '📋 Vistoria: ' + dados.titulo,
-    '🆔 ID: ' + dados.idAtividade,
-    '📅 Data Sincronização: ' + formatarData_(dados.dataSync),
-    '📅 Data Finalização: ' + formatarData_(dados.dataFim),
-    '📊 Conformidade: ' + Math.round((Number(dados.percentual) || 0) * 100) + '%',
-    '🎯 Data Revisão: ' + formatarData_(dados.dataRevisao),
-    '🔗 Hash: ' + dados.hash,
-    '',
-    '⚠️ ITENS CRÍTICOS PENDENTES - REVISAR!'
-  ].join('\n');
-}
-function log_(nivel, mensagem) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let aba = ss.getSheetByName('Logs');
-
-  if (!aba) {
-    aba = ss.insertSheet('Logs');
-    aba.appendRow(['Data/Hora', 'Nível', 'Mensagem']);
+  if (crit === 'alta') {
+    evento.addPopupReminder(1440);
+    evento.addEmailReminder(1440);
+  } else {
+    evento.addPopupReminder(1440);
   }
-
-  const dataFormatada = Utilities.formatDate(
-    new Date(),
-    Session.getScriptTimeZone(),
-    'dd/MM/yyyy, HH:mm:ss'
-  );
-
-  aba.appendRow([dataFormatada, nivel, mensagem]);
-
-  
 }
 
 function setupTriggerCalendar() {
   const triggers = ScriptApp.getProjectTriggers();
+
   const jaExiste = triggers.some(function(trigger) {
     return trigger.getHandlerFunction() === 'sincronizarCalendarCompleto';
   });
@@ -367,4 +234,3 @@ function setupTriggerCalendar() {
 
   Logger.log('Trigger criado com sucesso.');
 }
-
